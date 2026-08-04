@@ -124,20 +124,8 @@ namespace TVHeadEnd
                 throw new InvalidOperationException(Message);
             }
 
-            if (string.IsNullOrEmpty(config.Username))
-            {
-                const string Message = "[TVHclient] HTSConnectionHandler.EnsureConnection: username must be configured";
-                _logger.LogError(Message);
-                throw new InvalidOperationException(Message);
-            }
-
-            if (string.IsNullOrEmpty(config.Password))
-            {
-                const string Message = "[TVHclient] HTSConnectionHandler.EnsureConnection: password must be configured";
-                _logger.LogError(Message);
-                throw new InvalidOperationException(Message);
-            }
-
+            // No check on the username and password: a TVHeadend that grants anonymous access, for
+            // instance one started with --noacl, is reached without either of them.
             _priority = config.Priority;
             _profile = config.Profile.Trim();
             _channelType = config.ChannelType.Trim();
@@ -261,7 +249,9 @@ namespace TVHeadEnd
         /// Builds an absolute, credentialed URL for a resource served by TVHeadend over HTTP.
         /// </summary>
         /// <remarks>
-        /// The web root is the one reported by the server, so a connection is established first.
+        /// The web root is the one reported by the server, so a connection is established first. A
+        /// TVHeadend that grants anonymous access is configured without credentials, in which case
+        /// the URL gets no userinfo part rather than an empty ':@' one.
         /// </remarks>
         /// <param name="relativePath">The path below the web root, with or without a leading slash.</param>
         /// <returns>An absolute URL including the configured credentials.</returns>
@@ -269,7 +259,11 @@ namespace TVHeadEnd
         {
             EnsureConnection();
 
-            return "http://" + _userName + ":" + _password + "@" + _tvhServerName + ":" + _httpPort + _webRoot
+            string userInfo = _userName.Length == 0 && _password.Length == 0
+                ? string.Empty
+                : _userName + ":" + _password + "@";
+
+            return "http://" + userInfo + _tvhServerName + ":" + _httpPort + _webRoot
                 + "/" + relativePath.TrimStart('/');
         }
 
