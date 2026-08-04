@@ -2,6 +2,7 @@ using MediaBrowser.Controller;
 using MediaBrowser.Controller.Channels;
 using MediaBrowser.Controller.LiveTv;
 using MediaBrowser.Controller.Plugins;
+using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace TVHeadEnd;
@@ -17,6 +18,7 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         serviceCollection.AddSingleton<HTSConnectionHandler>();
         serviceCollection.AddSingleton<ConnectionTester>();
         serviceCollection.AddSingleton<ImageCache>();
+        serviceCollection.AddSingleton<IScheduledTask, ScheduledTasks.PruneImageCacheTask>();
         serviceCollection.AddSingleton<ILiveTvService, LiveTvService>();
         serviceCollection.AddSingleton<IChannel, RecordingsChannel>();
     }

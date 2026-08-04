@@ -85,6 +85,7 @@ public class ImageCache
         string? cached = FindCached(key);
         if (cached is not null && File.GetLastWriteTimeUtc(cached) > DateTime.UtcNow - MaxAge)
         {
+            MarkUsed(cached);
             return cached;
         }
 
@@ -136,6 +137,94 @@ public class ImageCache
         {
             _logger.LogDebug(ex, "[TVHclient] ImageCache: could not fetch '{Path}'", uri.PathAndQuery);
             return cached;
+        }
+    }
+
+    /// <summary>
+    /// Deletes cached images that have not been used for a while, along with any temporary file a
+    /// download left behind.
+    /// </summary>
+    /// <remarks>
+    /// Jellyfin only asks for programmes inside the guide window, so the images of programmes that
+    /// have aired stop being used and age out, while a channel icon is used on every channel refresh
+    /// and stays. Keep <paramref name="maxIdleTime"/> comfortably above the configured guide length,
+    /// or an image still referenced by an item could be deleted before it is asked for again.
+    /// </remarks>
+    /// <param name="maxIdleTime">How long an unused image is kept.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>The number of files deleted and the bytes they occupied.</returns>
+    public (int Files, long Bytes) Prune(TimeSpan maxIdleTime, CancellationToken cancellationToken)
+    {
+        if (!Directory.Exists(_directory))
+        {
+            return (0, 0);
+        }
+
+        DateTime now = DateTime.UtcNow;
+        DateTime idleCutoff = now - maxIdleTime;
+
+        // A temporary file younger than this may still be a download in flight.
+        DateTime temporaryCutoff = now - TimeSpan.FromHours(1);
+
+        int files = 0;
+        long bytes = 0;
+
+        foreach (string path in Directory.EnumerateFiles(_directory))
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            try
+            {
+                var info = new FileInfo(path);
+
+                bool stale = path.EndsWith(".tmp", StringComparison.OrdinalIgnoreCase)
+                    ? info.LastWriteTimeUtc < temporaryCutoff
+                    : info.LastAccessTimeUtc < idleCutoff;
+
+                if (!stale)
+                {
+                    continue;
+                }
+
+                long size = info.Length;
+                info.Delete();
+
+                files++;
+                bytes += size;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                _logger.LogDebug(ex, "[TVHclient] ImageCache: could not delete '{Path}'", path);
+            }
+        }
+
+        return (files, bytes);
+    }
+
+    /// <summary>
+    /// Records that a cached image is still in use, so it survives the next prune.
+    /// </summary>
+    /// <remarks>
+    /// The access time is written explicitly because a file system mounted noatime or relatime does
+    /// not maintain it on reads. Only the write time says when the image was downloaded, so it is
+    /// left alone: the refetch check in <see cref="GetLocalPathAsync"/> relies on it.
+    /// </remarks>
+    /// <param name="path">The cached file.</param>
+    private void MarkUsed(string path)
+    {
+        try
+        {
+            // Written at most once a day per image: a guide refresh touches hundreds of them.
+            if (File.GetLastAccessTimeUtc(path) > DateTime.UtcNow - TimeSpan.FromDays(1))
+            {
+                return;
+            }
+
+            File.SetLastAccessTimeUtc(path, DateTime.UtcNow);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            _logger.LogDebug(ex, "[TVHclient] ImageCache: could not mark '{Path}' as used", path);
         }
     }
 
