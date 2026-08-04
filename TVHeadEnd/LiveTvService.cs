@@ -431,6 +431,11 @@ namespace TVHeadEnd
                 livetvasset.Path = _htsConnectionHandler.GetAuthenticatedUrl(ticket.Path);
                 livetvasset.Protocol = MediaProtocol.Http;
                 livetvasset.AnalyzeDurationMs = 2000;
+
+                // Direct play would send the client to TVHeadend itself, which only works for
+                // clients on the same network as the TVHeadend server. Jellyfin fetches the stream
+                // instead, so it also plays from outside that network.
+                livetvasset.SupportsDirectPlay = false;
                 livetvasset.SupportsDirectStream = false;
                 livetvasset.RequiresClosing = true;
                 livetvasset.SupportsProbing = false;
@@ -474,6 +479,10 @@ namespace TVHeadEnd
                     Path = _htsConnectionHandler.GetHttpBaseUrl() + ticket.Url,
                     Protocol = MediaProtocol.Http,
                     AnalyzeDurationMs = 2000,
+
+                    // See the probing branch above: the stream is fetched by Jellyfin rather than
+                    // by the client, so it works for clients outside the TVHeadend network too.
+                    SupportsDirectPlay = false,
                     SupportsDirectStream = false,
                     SupportsProbing = false,
                     Container = "mpegts",
@@ -585,12 +594,9 @@ namespace TVHeadEnd
                 mediaSourceInfo.RequiresOpening = true;
                 _logger.LogDebug("        RequiresOpening:            {RequiresOpening}", info.RequiresOpening);
 
-                mediaSourceInfo.SupportsDirectPlay = true;
-                _logger.LogDebug("        SupportsDirectPlay:         {SupportsDirectPlay}", info.SupportsDirectPlay);
-
-                mediaSourceInfo.SupportsDirectStream = true;
-                _logger.LogDebug("        SupportsDirectStream:       {SupportsDirectStream}", info.SupportsDirectStream);
-
+                // The direct play and direct stream flags are deliberately left as the caller set
+                // them: they decide whether the client is sent to TVHeadend, which the probe
+                // result has nothing to say about.
                 mediaSourceInfo.SupportsTranscoding = true;
                 _logger.LogDebug("        SupportsTranscoding:        {SupportsTranscoding}", info.SupportsTranscoding);
 

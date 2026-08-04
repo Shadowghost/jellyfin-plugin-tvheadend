@@ -280,6 +280,11 @@ namespace TVHeadEnd
                         Id = item.Id,
                         Container = "mpegts",
                         AnalyzeDurationMs = 2000,
+
+                        // Direct play would have the client fetch the recording from TVHeadend,
+                        // which only clients on the TVHeadend network can reach. Jellyfin fetches
+                        // it instead, so recordings also play from outside that network.
+                        SupportsDirectPlay = false,
                         MediaStreams = new List<MediaStream>
                         {
                             new MediaStream
