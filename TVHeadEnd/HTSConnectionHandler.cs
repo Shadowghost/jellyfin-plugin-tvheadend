@@ -51,8 +51,6 @@ namespace TVHeadEnd
         private string _webRoot = string.Empty;
         private string _userName = string.Empty;
         private string _password = string.Empty;
-        private bool _enableSubsMaudios;
-        private bool _forceDeinterlace;
 
         private LiveTvService? _liveTvService;
 
@@ -137,8 +135,6 @@ namespace TVHeadEnd
             _priority = config.Priority;
             _profile = config.Profile.Trim();
             _channelType = config.ChannelType.Trim();
-            _enableSubsMaudios = config.EnableSubsMaudios;
-            _forceDeinterlace = config.ForceDeinterlace;
 
             if (_priority < DvrPriorityImportant || _priority > DvrPriorityNotSet)
             {
@@ -385,16 +381,31 @@ namespace TVHeadEnd
             return BuildHttpBaseUrl();
         }
 
+        /// <summary>
+        /// Gets a value indicating whether live TV streams are set up for subtitles and multiple
+        /// audio tracks.
+        /// </summary>
+        /// <remarks>
+        /// Read from the configuration on every call rather than cached in <see cref="Init"/>, so
+        /// toggling it applies to the next stream instead of requiring a server restart.
+        /// </remarks>
+        /// <returns><c>true</c> when the feature is enabled.</returns>
         public bool GetEnableSubsMaudios()
         {
-            Init();
-            return _enableSubsMaudios;
+            return Plugin.Instance.Configuration.EnableSubsMaudios;
         }
 
+        /// <summary>
+        /// Gets a value indicating whether probed video streams should be reported as interlaced.
+        /// </summary>
+        /// <remarks>
+        /// Read from the configuration on every call rather than cached in <see cref="Init"/>, so
+        /// toggling it applies to the next stream instead of requiring a server restart.
+        /// </remarks>
+        /// <returns><c>true</c> when deinterlacing should be forced.</returns>
         public bool GetForceDeinterlace()
         {
-            Init();
-            return _forceDeinterlace;
+            return Plugin.Instance.Configuration.ForceDeinterlace;
         }
 
         public Task<IEnumerable<MyRecordingInfo>> BuildDvrInfos(CancellationToken cancellationToken)
