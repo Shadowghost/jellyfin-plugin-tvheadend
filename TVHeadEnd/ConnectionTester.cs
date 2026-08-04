@@ -249,31 +249,19 @@ public class ConnectionTester
         {
             using var httpClient = _httpClientFactory.CreateClient(NamedClient.Default);
 
-            using var response = await GetAuthenticatedAsync(
+            var (response, offeredScheme) = await HttpAuthHelper.GetAsync(
                 httpClient,
                 baseUrl + "/playlist/channels",
-                settings,
-                result,
+                settings.Username.Trim(),
+                settings.Password.Trim(),
+                _logger,
                 timeout.Token).ConfigureAwait(false);
 
-            if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+            using (response)
             {
-                result.HttpError = "TVHeadend rejected the credentials on the HTTP port, or this user may not stream";
-                return;
+                result.HttpAuthScheme = offeredScheme;
+                await ReadPlaylistAsync(response, baseUrl, result, timeout.Token).ConfigureAwait(false);
             }
-
-            if (!response.IsSuccessStatusCode)
-            {
-                result.HttpError = string.Create(
-                    CultureInfo.InvariantCulture,
-                    $"{baseUrl} answered with HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
-                return;
-            }
-
-            result.HttpSuccess = true;
-
-            string playlist = await response.Content.ReadAsStringAsync(timeout.Token).ConfigureAwait(false);
-            result.ChannelCount = CountPlaylistEntries(playlist);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -294,6 +282,40 @@ public class ConnectionTester
     }
 
     /// <summary>
+    /// Turns the channel playlist response into the HTTP half of the result.
+    /// </summary>
+    /// <param name="response">The response to the playlist request.</param>
+    /// <param name="baseUrl">The TVHeadend HTTP base URL, for the error message.</param>
+    /// <param name="result">The result to fill in.</param>
+    /// <param name="cancellationToken">The cancellation token.</param>
+    /// <returns>A task that completes once the result has been filled in.</returns>
+    private static async Task ReadPlaylistAsync(
+        HttpResponseMessage response,
+        string baseUrl,
+        ConnectionTestResult result,
+        CancellationToken cancellationToken)
+    {
+        if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
+        {
+            result.HttpError = "TVHeadend rejected the credentials on the HTTP port, or this user may not stream";
+            return;
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            result.HttpError = string.Create(
+                CultureInfo.InvariantCulture,
+                $"{baseUrl} answered with HTTP {(int)response.StatusCode} {response.ReasonPhrase}");
+            return;
+        }
+
+        result.HttpSuccess = true;
+
+        string playlist = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+        result.ChannelCount = CountPlaylistEntries(playlist);
+    }
+
+    /// <summary>
     /// Counts the entries of an M3U playlist.
     /// </summary>
     /// <param name="playlist">The playlist body.</param>
@@ -311,80 +333,5 @@ public class ConnectionTester
         }
 
         return count;
-    }
-
-    /// <summary>
-    /// Performs a GET request, answering whichever authentication challenge TVHeadend sends.
-    /// </summary>
-    /// <remarks>
-    /// The scheme is not known up front: TVHeadend can be configured for basic ('plain') or
-    /// digest authentication, or for none at all. The request therefore goes out unauthenticated
-    /// first and is repeated with credentials if the server asks for them, the way any HTTP client
-    /// does. The scheme that was offered is recorded in the result, because it tells an admin
-    /// which TVHeadend authentication type is in effect.
-    /// </remarks>
-    /// <param name="httpClient">The HTTP client to use.</param>
-    /// <param name="url">The URL to request.</param>
-    /// <param name="settings">The settings being tested.</param>
-    /// <param name="result">The result to record the offered scheme in.</param>
-    /// <param name="cancellationToken">The cancellation token.</param>
-    /// <returns>The response to the authenticated request, or to the first one when no
-    /// authentication was requested.</returns>
-    private async Task<HttpResponseMessage> GetAuthenticatedAsync(
-        HttpClient httpClient,
-        string url,
-        TvhConnectionSettings settings,
-        ConnectionTestResult result,
-        CancellationToken cancellationToken)
-    {
-        var response = await httpClient.GetAsync(url, cancellationToken).ConfigureAwait(false);
-        if (response.StatusCode != HttpStatusCode.Unauthorized)
-        {
-            return response;
-        }
-
-        result.HttpAuthScheme = string.Join(", ", response.Headers.WwwAuthenticate.Select(header => header.Scheme));
-
-        AuthenticationHeaderValue? challenge = response.Headers.WwwAuthenticate
-            .FirstOrDefault(header => header.Scheme.Equals("Digest", StringComparison.OrdinalIgnoreCase))
-            ?? response.Headers.WwwAuthenticate.FirstOrDefault();
-
-        string username = settings.Username.Trim();
-        string password = settings.Password.Trim();
-        string? authorization = null;
-
-        if (challenge is not null && challenge.Scheme.Equals("Digest", StringComparison.OrdinalIgnoreCase))
-        {
-            string? digest = HttpDigestHelper.BuildAuthorization(
-                challenge,
-                HttpMethod.Get.Method,
-                new Uri(url),
-                username,
-                password);
-
-            if (digest is not null)
-            {
-                authorization = "Digest " + digest;
-            }
-        }
-        else if (challenge is not null && challenge.Scheme.Equals("Basic", StringComparison.OrdinalIgnoreCase))
-        {
-            authorization = "Basic " + Convert.ToBase64String(Encoding.UTF8.GetBytes(username + ":" + password));
-        }
-
-        if (authorization is null)
-        {
-            _logger.LogWarning(
-                "[TVHclient] ConnectionTester: cannot answer the '{Scheme}' authentication challenge",
-                result.HttpAuthScheme);
-            return response;
-        }
-
-        response.Dispose();
-
-        using var authenticatedRequest = new HttpRequestMessage(HttpMethod.Get, url);
-        authenticatedRequest.Headers.TryAddWithoutValidation("Authorization", authorization);
-
-        return await httpClient.SendAsync(authenticatedRequest, cancellationToken).ConfigureAwait(false);
     }
 }

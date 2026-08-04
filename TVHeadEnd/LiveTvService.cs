@@ -38,11 +38,13 @@ namespace TVHeadEnd
 
         private readonly HTSConnectionHandler _htsConnectionHandler;
         private readonly AccessTicketHandler _channelTicketHandler;
+        private readonly ImageCache _imageCache;
 
         private readonly ILogger<LiveTvService> _logger;
 
-        public LiveTvService(ILoggerFactory loggerFactory, IMediaEncoder mediaEncoder, HTSConnectionHandler connectionHandler)
+        public LiveTvService(ILoggerFactory loggerFactory, IMediaEncoder mediaEncoder, HTSConnectionHandler connectionHandler, ImageCache imageCache)
         {
+            _imageCache = imageCache;
             // System.Diagnostics.StackTrace t = new System.Diagnostics.StackTrace();
             _logger = loggerFactory.CreateLogger<LiveTvService>();
             _logger.LogDebug("LiveTvService()");
@@ -409,6 +411,16 @@ namespace TVHeadEnd
                 }
             }
 
+            await CacheImagesAsync(
+                list,
+                channel => channel.ImageUrl,
+                (channel, path) =>
+                {
+                    channel.ImagePath = path;
+                    channel.HasImage = !string.IsNullOrEmpty(path) || !string.IsNullOrEmpty(channel.ImageUrl);
+                },
+                cancellationToken).ConfigureAwait(false);
+
             return list;
         }
 
@@ -496,6 +508,42 @@ namespace TVHeadEnd
                     }
                 };
             }
+        }
+
+        /// <summary>
+        /// Replaces TVHeadend image URLs with locally cached files.
+        /// </summary>
+        /// <remarks>
+        /// Jellyfin cannot authenticate against TVHeadend when it downloads an image, so the images
+        /// are fetched here. The work is done concurrently because a guide refresh can carry
+        /// hundreds of programmes, and it is cheap once the files are on disk.
+        /// </remarks>
+        /// <typeparam name="T">The guide item type.</typeparam>
+        /// <param name="items">The items to cache the images of.</param>
+        /// <param name="getUrl">Reads the image URL of an item.</param>
+        /// <param name="setPath">Applies the cached path, which is <c>null</c> when there is none.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>A task that completes once every image has been dealt with.</returns>
+        private async Task CacheImagesAsync<T>(
+            IReadOnlyList<T> items,
+            Func<T, string?> getUrl,
+            Action<T, string?> setPath,
+            CancellationToken cancellationToken)
+        {
+            var options = new ParallelOptions
+            {
+                MaxDegreeOfParallelism = 6,
+                CancellationToken = cancellationToken
+            };
+
+            await Parallel.ForEachAsync(
+                items,
+                options,
+                async (item, token) =>
+                {
+                    string? path = await _imageCache.GetLocalPathAsync(getUrl(item), token).ConfigureAwait(false);
+                    setPath(item, path);
+                }).ConfigureAwait(false);
         }
 
         /// <summary>
@@ -746,8 +794,17 @@ namespace TVHeadEnd
             foreach (var program in programs)
             {
                 program.ImageUrl = _htsConnectionHandler.ResolveImageUrl(program.ImageUrl);
-                program.HasImage = !string.IsNullOrEmpty(program.ImageUrl);
             }
+
+            await CacheImagesAsync(
+                programs,
+                program => program.ImageUrl,
+                (program, path) =>
+                {
+                    program.ImagePath = path;
+                    program.HasImage = !string.IsNullOrEmpty(path) || !string.IsNullOrEmpty(program.ImageUrl);
+                },
+                cancellationToken).ConfigureAwait(false);
 
             return programs;
         }

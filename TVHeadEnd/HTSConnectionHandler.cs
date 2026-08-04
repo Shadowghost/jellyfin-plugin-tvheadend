@@ -242,7 +242,11 @@ namespace TVHeadEnd
                 return image;
             }
 
-            return GetAuthenticatedUrl(image);
+            // Without credentials: an image URL is stored with the item and served back through the
+            // API, and they would be useless in it anyway because the HTTP client that fetches an
+            // image drops the userinfo of a URL. Images that need authentication are fetched by
+            // ImageCache instead.
+            return GetHttpBaseUrl() + "/" + image.TrimStart('/');
         }
 
         /// <summary>

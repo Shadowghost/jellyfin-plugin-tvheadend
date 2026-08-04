@@ -16,6 +16,7 @@ public class ServiceRegistrator : IPluginServiceRegistrator
     {
         serviceCollection.AddSingleton<HTSConnectionHandler>();
         serviceCollection.AddSingleton<ConnectionTester>();
+        serviceCollection.AddSingleton<ImageCache>();
         serviceCollection.AddSingleton<ILiveTvService, LiveTvService>();
         serviceCollection.AddSingleton<IChannel, RecordingsChannel>();
     }
