@@ -1,6 +1,6 @@
 using System;
 using System.Collections.Generic;
-using System.Text;
+using System.Globalization;
 using System.Threading;
 using System.Threading.Tasks;
 using MediaBrowser.Controller.LiveTv;
@@ -37,8 +37,6 @@ namespace TVHeadEnd
         private readonly DvrDataHelper _dvrDataHelper;
         private readonly AutorecDataHelper _autorecDataHelper;
 
-        private readonly Dictionary<string, string> _headers = new Dictionary<string, string>();
-
         private volatile bool _initialLoadFinished;
         private volatile bool _connected;
         private volatile bool _configured;
@@ -46,7 +44,6 @@ namespace TVHeadEnd
         private HTSConnectionAsync? _htsConnection;
         private int _priority;
         private string _profile = string.Empty;
-        private string _httpBaseUrl = string.Empty;
         private string _channelType = string.Empty;
         private string _tvhServerName = string.Empty;
         private int _httpPort;
@@ -161,12 +158,6 @@ namespace TVHeadEnd
             _userName = config.Username.Trim();
             _password = config.Password.Trim();
 
-            _httpBaseUrl = BuildHttpBaseUrl();
-
-            string authInfo = _userName + ":" + _password;
-            authInfo = Convert.ToBase64String(Encoding.Default.GetBytes(authInfo));
-            _headers["Authorization"] = "Basic " + authInfo;
-
             // The constructor runs before any configuration is available, so the channel type
             // has to be handed to the data helper here, once it has actually been read.
             _channelDataHelper.SetChannelType4Other(_channelType);
@@ -201,8 +192,7 @@ namespace TVHeadEnd
         /// </summary>
         /// <remarks>
         /// The server knows its own path prefix, so it is the only source for this value; an
-        /// absent field means TVHeadend is served from the root. The HTTP URLs are rebuilt
-        /// because they are assembled in Init(), before a connection exists.
+        /// absent field means TVHeadend is served from the root.
         /// </remarks>
         /// <param name="reportedWebRoot">The web root from the hello response.</param>
         private void ApplyServerWebRoot(string? reportedWebRoot)
@@ -219,21 +209,20 @@ namespace TVHeadEnd
                 resolved);
 
             _webRoot = resolved;
-            _httpBaseUrl = BuildHttpBaseUrl();
         }
 
         /// <summary>
         /// Builds the TVHeadend HTTP base URL from the current settings.
         /// </summary>
+        /// <remarks>
+        /// Without credentials: this URL ends up in media sources that Jellyfin hands to clients
+        /// and in the ffmpeg command lines it logs. Requests made from it carry a playback ticket
+        /// instead, and the few places that really need credentials build their URL through
+        /// <see cref="GetAuthenticatedUrl"/>.
+        /// </remarks>
         /// <returns>The HTTP base URL.</returns>
         private string BuildHttpBaseUrl()
         {
-            if (_enableSubsMaudios)
-            {
-                // Use HTTP basic auth instead of TVH ticketing system for authentication to allow the users to switch subs or audio tracks at any time
-                return "http://" + _userName + ":" + _password + "@" + _tvhServerName + ":" + _httpPort + _webRoot;
-            }
-
             return "http://" + _tvhServerName + ":" + _httpPort + _webRoot;
         }
 
@@ -289,11 +278,6 @@ namespace TVHeadEnd
             _logger.LogDebug("[TVHclient] HTSConnectionHandler.GetChannelImage: channelId: {Id}", channelId);
 
             return ResolveImageUrl(_channelDataHelper.GetChannelIcon4ChannelId(channelId));
-        }
-
-        public Dictionary<string, string> GetHeaders()
-        {
-            return new Dictionary<string, string>(_headers);
         }
 
         // private static Stream ImageToPNGStream(Image image)
@@ -398,7 +382,7 @@ namespace TVHeadEnd
             // The web root is taken from the HTSP handshake, so a connection is required
             // before the base URL is known to be correct.
             EnsureConnection();
-            return _httpBaseUrl;
+            return BuildHttpBaseUrl();
         }
 
         public bool GetEnableSubsMaudios()

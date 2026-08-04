@@ -424,10 +424,12 @@ namespace TVHeadEnd
 
                 livetvasset.Id = channelId;
 
-                // Use HTTP basic auth in HTTP header instead of TVH ticketing system for authentication to allow the users to switch subs or audio tracks at any time
-                livetvasset.Path = _htsConnectionHandler.GetHttpBaseUrl() + ticket.Path;
+                // Probed with the credentials in the URL because that is the only way ffprobe
+                // receives them: Jellyfin passes nothing but the user agent from
+                // RequiredHttpHeaders to it. The URL is replaced below, before this source
+                // leaves the plugin.
+                livetvasset.Path = _htsConnectionHandler.GetAuthenticatedUrl(ticket.Path);
                 livetvasset.Protocol = MediaProtocol.Http;
-                livetvasset.RequiredHttpHeaders = _htsConnectionHandler.GetHeaders();
                 livetvasset.AnalyzeDurationMs = 2000;
                 livetvasset.SupportsDirectStream = false;
                 livetvasset.RequiresClosing = true;
@@ -437,9 +439,14 @@ namespace TVHeadEnd
                 livetvasset.IsInfiniteStream = true;
 
                 // Probe the asset stream to determine available sub-streams
-                string livetvasset_probeUrl = string.Empty + livetvasset.Path;
                 string livetvasset_source = "LiveTV";
-                await ProbeStream(livetvasset, livetvasset_probeUrl, livetvasset_source, cancellationToken).ConfigureAwait(false);
+                await ProbeStream(livetvasset, livetvasset_source, cancellationToken).ConfigureAwait(false);
+
+                // Hand back the ticketed URL now that the probe is done. TVHeadend authenticates
+                // the ticket by itself, so the credentials never end up in the ffmpeg command line
+                // that Jellyfin logs, nor in the media source it returns to every client that asks
+                // for the playback info of this channel.
+                livetvasset.Path = _htsConnectionHandler.GetHttpBaseUrl() + ticket.Url;
 
                 // If enabled, force video deinterlacing for channels
                 if (_htsConnectionHandler.GetForceDeinterlace())
@@ -492,10 +499,40 @@ namespace TVHeadEnd
             }
         }
 
-        private async Task ProbeStream(MediaSourceInfo mediaSourceInfo, string probeUrl, string source, CancellationToken cancellationToken)
+        /// <summary>
+        /// Strips the credentials out of a URL so it can be logged.
+        /// </summary>
+        /// <remarks>
+        /// Live TV stream URLs carry the TVHeadend username and password in the userinfo part when
+        /// subtitle and multiple audio track support is enabled, and recording URLs always do.
+        /// </remarks>
+        /// <param name="url">The URL to redact.</param>
+        /// <returns>The URL without its userinfo part.</returns>
+        private static string RedactCredentials(string url)
+        {
+            if (!Uri.TryCreate(url, UriKind.Absolute, out Uri? uri) || string.IsNullOrEmpty(uri.UserInfo))
+            {
+                return url;
+            }
+
+            return uri.GetComponents(UriComponents.SchemeAndServer | UriComponents.PathAndQuery, UriFormat.UriEscaped);
+        }
+
+        /// <summary>
+        /// Fills in the real stream details of a media source by probing it with ffprobe.
+        /// </summary>
+        /// <remarks>
+        /// The stream is read from <see cref="MediaSourceInfo.Path"/>, which is why the caller has
+        /// to put the credentialed URL there for the duration of the probe.
+        /// </remarks>
+        /// <param name="mediaSourceInfo">The media source to probe and fill in.</param>
+        /// <param name="source">A label for the log.</param>
+        /// <param name="cancellationToken">The cancellation token.</param>
+        /// <returns>A task that completes once the source has been updated.</returns>
+        private async Task ProbeStream(MediaSourceInfo mediaSourceInfo, string source, CancellationToken cancellationToken)
         {
             _logger.LogInformation("Probe stream for {Source}", source);
-            _logger.LogInformation("Probe URL: {ProbeUrl}", probeUrl);
+            _logger.LogDebug("Probe URL: {ProbeUrl}", RedactCredentials(mediaSourceInfo.Path));
 
             MediaInfoRequest req = new MediaInfoRequest
             {

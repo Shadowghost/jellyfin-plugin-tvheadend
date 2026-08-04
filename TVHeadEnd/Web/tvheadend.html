@@ -51,7 +51,7 @@
                         <input is="emby-checkbox" type="checkbox" id="chkEnableSubsMaudios" />
                         <span>Enable live TV subtitles and multiple audio tracks (Experimental)</span>
                     </label>
-                    <div class="fieldDescription checkboxFieldDescription">Note: Enabling this feature has security implications and will require a server restart. (TVH username and password will appear in server logs and will be transmitted in cleartext over the network)</div>
+                    <div class="fieldDescription checkboxFieldDescription">Each channel is probed with ffprobe when it starts, so Jellyfin learns which subtitle and audio tracks it carries. That probe is a second TVHeadend subscription and a few seconds of analysis before playback begins, which on a single tuner can slow channel switching or contend for the adapter.</div>
                 </div>
                 <div class="checkboxContainer checkboxContainer-withDescription">
                     <label>
