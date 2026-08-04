@@ -56,9 +56,9 @@
                 <div class="checkboxContainer checkboxContainer-withDescription">
                     <label>
                         <input is="emby-checkbox" type="checkbox" id="chkForceDeinterlace" />
-                        <span>Force video deinterlacing for all channels and recordings. (Experimental)</span>
+                        <span>Report probed live TV video as interlaced</span>
                     </label>
-                    <div class="fieldDescription checkboxFieldDescription">Note: Changing this requires a server restart.</div>
+                    <div class="fieldDescription checkboxFieldDescription">Only has an effect together with the setting above: a probe of a running broadcast often reports interlaced video as progressive, which stops Jellyfin from deinterlacing it. Without probing, live TV and recordings are already reported as interlaced.</div>
                 </div>
                 <div>
                     <button is="emby-button" type="submit" class="raised button-submit block">

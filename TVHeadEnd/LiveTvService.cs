@@ -453,20 +453,10 @@ namespace TVHeadEnd
                 // for the playback info of this channel.
                 livetvasset.Path = _htsConnectionHandler.GetHttpBaseUrl() + ticket.Url;
 
-                // If enabled, force video deinterlacing for channels
+                // If enabled, override the probe result and report the video as interlaced
                 if (_htsConnectionHandler.GetForceDeinterlace())
                 {
-                    _logger.LogInformation("LiveTvService.GetChannelStream: force video deinterlacing for all channels and recordings is enabled");
-
-                    foreach (MediaStream i in livetvasset.MediaStreams)
-                    {
-                        if (i.Type == MediaStreamType.Video && i.IsInterlaced == false)
-                        {
-                            i.IsInterlaced = true;
-                        }
-
-                        i.RealFrameRate = 50.0F;
-                    }
+                    ForceDeinterlace(livetvasset);
                 }
 
                 return livetvasset;
@@ -505,6 +495,29 @@ namespace TVHeadEnd
                         }
                     }
                 };
+            }
+        }
+
+        /// <summary>
+        /// Reports every video stream of a source as interlaced.
+        /// </summary>
+        /// <remarks>
+        /// A live broadcast is often interlaced but probed as progressive, because ffprobe only
+        /// sees the couple of frames it read from the running stream. Only video streams are
+        /// touched, and the probed frame rates are left alone: they describe the actual stream
+        /// better than a fixed value can.
+        /// </remarks>
+        /// <param name="mediaSourceInfo">The media source to adjust.</param>
+        private void ForceDeinterlace(MediaSourceInfo mediaSourceInfo)
+        {
+            _logger.LogInformation("LiveTvService.ForceDeinterlace: reporting all probed video streams as interlaced");
+
+            foreach (MediaStream stream in mediaSourceInfo.MediaStreams)
+            {
+                if (stream.Type == MediaStreamType.Video)
+                {
+                    stream.IsInterlaced = true;
+                }
             }
         }
 
