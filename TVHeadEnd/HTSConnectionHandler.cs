@@ -27,7 +27,12 @@ namespace TVHeadEnd
         /// </summary>
         private const int DvrPriorityNotSet = 5;
 
-        private readonly object _lock = new object();
+        /// <summary>
+        /// How long a failed connect or login suppresses further attempts.
+        /// </summary>
+        private static readonly TimeSpan ConnectRetryInterval = TimeSpan.FromSeconds(30);
+
+        private readonly object _lock = new();
 
         private readonly ILoggerFactory _loggerFactory;
         private readonly ILogger<HTSConnectionHandler> _logger;
@@ -51,6 +56,7 @@ namespace TVHeadEnd
         private string _webRoot = string.Empty;
         private string _userName = string.Empty;
         private string _password = string.Empty;
+        private DateTime _lastConnectFailure = DateTime.MinValue;
 
         private LiveTvService? _liveTvService;
 
@@ -284,59 +290,96 @@ namespace TVHeadEnd
         //    return stream;
         // }
 
+        /// <summary>
+        /// Makes sure an authenticated HTSP connection is in place.
+        /// </summary>
+        /// <remarks>
+        /// A connection that cannot be established is reported by throwing, so callers fail with a
+        /// reason instead of going on to queue messages that nothing will ever answer. Attempts are
+        /// rate limited by <see cref="ConnectRetryInterval"/> while the server is unreachable.
+        /// </remarks>
+        /// <exception cref="InvalidOperationException">The server is not reachable or rejected the
+        /// configured credentials.</exception>
         private void EnsureConnection()
         {
             Init();
 
-            // _logger.LogDebug("[TVHclient] HTSConnectionHandler.ensureConnection");
-            if (_htsConnection == null || _htsConnection.NeedsRestart())
-            {
-                _logger.LogDebug("[TVHclient] HTSConnectionHandler.ensureConnection: create new HTS connection");
-                // "clientversion" is the client's own version, not the protocol version -
-                // TVHeadend only reports it, but sending the HTSP number here was misleading.
-                Version? version = typeof(HTSConnectionHandler).Assembly.GetName().Version;
-                _htsConnection = new HTSConnectionAsync(
-                    this,
-                    "Jellyfin-TVHeadend",
-                    version?.ToString() ?? "unknown",
-                    _loggerFactory);
-                _connected = false;
-            }
-
             lock (_lock)
             {
-                if (!_connected)
+                if (_connected && _htsConnection != null && !_htsConnection.NeedsRestart())
                 {
-                    _logger.LogDebug(
-                        "[TVHclient] HTSConnectionHandler.ensureConnection: used connection parameters: " +
-                        "TVH Server = '{Servername}'; HTTP Port = '{Httpport}'; HTSP Port = '{Htspport}'; Web-Root = '{Webroot}'; " +
-                        "User = '{User}'; Password set = '{Passexists}'",
-                        _tvhServerName,
-                        _httpPort,
-                        _htspPort,
-                        _webRoot,
-                        _userName,
-                        _password.Length > 0);
+                    return;
+                }
 
+                if (_htsConnection == null || _htsConnection.NeedsRestart())
+                {
+                    // The replaced connection owns a socket and four cancellation token sources,
+                    // so it has to be disposed instead of just dropped.
+                    _htsConnection?.Dispose();
+                    _connected = false;
+
+                    _logger.LogDebug("[TVHclient] HTSConnectionHandler.EnsureConnection: create new HTS connection");
+                    // "clientversion" is the client's own version, not the protocol version -
+                    // TVHeadend only reports it, but sending the HTSP number here was misleading.
+                    Version? version = typeof(HTSConnectionHandler).Assembly.GetName().Version;
+                    _htsConnection = new HTSConnectionAsync(
+                        this,
+                        "Jellyfin-TVHeadend",
+                        version?.ToString() ?? "unknown",
+                        _loggerFactory);
+                }
+
+                TimeSpan sinceLastFailure = DateTime.UtcNow - _lastConnectFailure;
+                if (sinceLastFailure < ConnectRetryInterval)
+                {
+                    throw new InvalidOperationException(string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"TVHeadend at '{_tvhServerName}:{_htspPort}' could not be reached {sinceLastFailure.TotalSeconds:0} seconds ago, waiting another {(ConnectRetryInterval - sinceLastFailure).TotalSeconds:0} seconds before trying again"));
+                }
+
+                _logger.LogDebug(
+                    "[TVHclient] HTSConnectionHandler.EnsureConnection: used connection parameters: " +
+                    "TVH Server = '{Servername}'; HTTP Port = '{Httpport}'; HTSP Port = '{Htspport}'; Web-Root = '{Webroot}'; " +
+                    "User = '{User}'; Password set = '{Passexists}'",
+                    _tvhServerName,
+                    _httpPort,
+                    _htspPort,
+                    _webRoot,
+                    _userName,
+                    _password.Length > 0);
+
+                try
+                {
                     _htsConnection.Open(_tvhServerName, _htspPort);
                     _connected = _htsConnection.Authenticate(_userName, _password);
-
-                    if (_connected)
-                    {
-                        ApplyServerWebRoot(_htsConnection.GetWebRoot());
-                    }
-
-                    _logger.LogInformation(
-                        "[TVHclient] HTSConnectionHandler.EnsureConnection: connection established = {Connected}; "
-                        + "TVH server = '{ServerName}' {ServerVersion}; HTSP version negotiated = {NegotiatedHtspVersion} "
-                        + "(server supports up to {ServerHtspVersion}, client up to {ClientHtspVersion})",
-                        _connected,
-                        _htsConnection.GetServername(),
-                        _htsConnection.GetServerversion(),
-                        _htsConnection.GetNegotiatedProtocolVersion(),
-                        _htsConnection.GetServerProtocolVersion(),
-                        HTSMessage.HtspVersion);
                 }
+                catch (Exception)
+                {
+                    _connected = false;
+                    _lastConnectFailure = DateTime.UtcNow;
+                    throw;
+                }
+
+                if (!_connected)
+                {
+                    _lastConnectFailure = DateTime.UtcNow;
+                    throw new InvalidOperationException(string.Create(
+                        CultureInfo.InvariantCulture,
+                        $"TVHeadend at '{_tvhServerName}:{_htspPort}' rejected the configured username and password"));
+                }
+
+                _lastConnectFailure = DateTime.MinValue;
+                ApplyServerWebRoot(_htsConnection.GetWebRoot());
+
+                _logger.LogInformation(
+                    "[TVHclient] HTSConnectionHandler.EnsureConnection: connection established; "
+                    + "TVH server = '{ServerName}' {ServerVersion}; HTSP version negotiated = {NegotiatedHtspVersion} "
+                    + "(server supports up to {ServerHtspVersion}, client up to {ClientHtspVersion})",
+                    _htsConnection.GetServername(),
+                    _htsConnection.GetServerversion(),
+                    _htsConnection.GetNegotiatedProtocolVersion(),
+                    _htsConnection.GetServerProtocolVersion(),
+                    HTSMessage.HtspVersion);
             }
         }
 
@@ -423,14 +466,33 @@ namespace TVHeadEnd
             return _dvrDataHelper.BuildPendingTimersInfos(cancellationToken);
         }
 
+        /// <inheritdoc />
+        /// <remarks>
+        /// This runs on the HTSP worker threads, so nothing may escape it: an unhandled exception
+        /// on one of those threads takes the whole server down. The connection is stopped rather
+        /// than dropped, which marks it as needing a restart, and a reconnect is attempted right
+        /// away so a dropped connection heals without waiting for the next request.
+        /// </remarks>
         public void OnError(Exception ex)
         {
-            _logger.LogError(ex, "[TVHclient] HTSConnectionHandler: HTSP error");
-            _htsConnection?.Stop();
-            _htsConnection = null;
-            _connected = false;
-            // _liveTvService.sendDataSourceChanged();
-            EnsureConnection();
+            _logger.LogError(ex, "[TVHclient] HTSConnectionHandler: HTSP error - dropping the connection");
+
+            lock (_lock)
+            {
+                _htsConnection?.Stop();
+                _connected = false;
+            }
+
+            try
+            {
+                EnsureConnection();
+            }
+            catch (Exception reconnectFailure)
+            {
+                _logger.LogError(
+                    reconnectFailure,
+                    "[TVHclient] HTSConnectionHandler: reconnecting after an HTSP error failed - the next request will try again");
+            }
         }
 
         public void OnMessage(HTSMessage? response)

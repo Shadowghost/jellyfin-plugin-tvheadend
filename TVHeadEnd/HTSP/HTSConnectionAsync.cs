@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -12,6 +13,16 @@ namespace TVHeadEnd.HTSP
 {
     public sealed class HTSConnectionAsync : IDisposable
     {
+        /// <summary>
+        /// The time a single connect attempt may take before it is abandoned.
+        /// </summary>
+        /// <remarks>
+        /// A TVHeadend behind a firewall that drops the SYN instead of refusing it would otherwise
+        /// keep the attempt pending for well over a minute, because that is how long the operating
+        /// system retransmits before giving up.
+        /// </remarks>
+        private static readonly TimeSpan ConnectTimeout = TimeSpan.FromSeconds(10);
+
         private readonly object _lock;
         private readonly IHTSConnectionListener _listener;
         private readonly string _clientName;
@@ -98,13 +109,14 @@ namespace TVHeadEnd.HTSP
 
             try
             {
-                if (_socket != null && _socket.Connected)
-                {
-                    _socket.Close();
-                }
+                // Disposed unconditionally: a socket that never finished connecting reports
+                // Connected == false and would keep its file descriptor for as long as this
+                // instance is alive.
+                _socket?.Dispose();
             }
-            catch
+            catch (SocketException ex)
             {
+                _logger.LogDebug(ex, "[TVHclient] HTSConnectionAsync.Stop: closing the socket failed");
             }
 
             _needsRestart = true;
@@ -116,6 +128,19 @@ namespace TVHeadEnd.HTSP
             return _needsRestart;
         }
 
+        /// <summary>
+        /// Connects to a TVHeadend server and starts the worker threads.
+        /// </summary>
+        /// <remarks>
+        /// A failure is reported to the caller instead of being retried here. Retrying in place
+        /// used to hold this connection's lock for as long as the server stayed down, and it leaked
+        /// the socket of every failed attempt; reconnecting is now left to the next request, which
+        /// calls in here again anyway.
+        /// </remarks>
+        /// <param name="hostname">The TVHeadend hostname or IP address.</param>
+        /// <param name="port">The HTSP port.</param>
+        /// <exception cref="SocketException">The server could not be reached.</exception>
+        /// <exception cref="TimeoutException">The server did not answer in time.</exception>
         public void Open(string hostname, int port)
         {
             if (_connected)
@@ -125,47 +150,79 @@ namespace TVHeadEnd.HTSP
 
             lock (_lock)
             {
-                while (!_connected)
+                if (_connected)
                 {
-                    try
-                    {
-                        // Establish the remote endpoint for the socket.
-                        if (!IPAddress.TryParse(hostname, out IPAddress? ipAddress))
-                        {
-                            // no IP --> ask DNS
-                            IPHostEntry ipHostInfo = Dns.GetHostEntry(hostname);
-                            ipAddress = ipHostInfo.AddressList[0];
-                        }
-
-                        IPEndPoint remoteEP = new IPEndPoint(ipAddress, port);
-
-                        _logger.LogDebug(
-                            "[TVHclient] HTSConnectionAsync.Open: IPEndPoint = '{IP}'; AddressFamily = '{AF}'",
-                            remoteEP.ToString(),
-                            ipAddress.AddressFamily);
-
-                        // Create a TCP/IP socket.
-                        _socket = new Socket(ipAddress.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
-
-                        // connect to server
-                        _socket.Connect(remoteEP);
-
-                        _connected = true;
-                        _logger.LogDebug("[TVHclient] HTSConnectionAsync.Open: socket connected");
-                    }
-                    catch (Exception ex)
-                    {
-                        _logger.LogError(ex, "[TVHclient] HTSConnectionAsync.Open: exception caught");
-
-                        Thread.Sleep(2000);
-                    }
+                    return;
                 }
+
+                Connect(hostname, port);
 
                 _receiveHandlerThread = StartBackgroundThread(ReceiveHandler);
                 _messageBuilderThread = StartBackgroundThread(MessageBuilder);
                 _sendingHandlerThread = StartBackgroundThread(SendingHandler);
                 _messageDistributorThread = StartBackgroundThread(MessageDistributor);
             }
+        }
+
+        /// <summary>
+        /// Opens the socket to a TVHeadend server.
+        /// </summary>
+        /// <param name="hostname">The TVHeadend hostname or IP address.</param>
+        /// <param name="port">The HTSP port.</param>
+        private void Connect(string hostname, int port)
+        {
+            // Establish the remote endpoint for the socket.
+            if (!IPAddress.TryParse(hostname, out IPAddress? ipAddress))
+            {
+                // no IP --> ask DNS
+                IPAddress[] addresses = Dns.GetHostAddresses(hostname);
+                if (addresses.Length == 0)
+                {
+                    throw new SocketException((int)SocketError.HostNotFound);
+                }
+
+                ipAddress = addresses[0];
+            }
+
+            IPEndPoint remoteEP = new IPEndPoint(ipAddress, port);
+
+            _logger.LogDebug(
+                "[TVHclient] HTSConnectionAsync.Connect: IPEndPoint = '{IP}'; AddressFamily = '{AF}'",
+                remoteEP.ToString(),
+                ipAddress.AddressFamily);
+
+            // Create a TCP/IP socket.
+            Socket socket = new Socket(ipAddress.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+
+            try
+            {
+                using CancellationTokenSource connectTimeout = new CancellationTokenSource(ConnectTimeout);
+                socket.ConnectAsync(remoteEP, connectTimeout.Token).AsTask().GetAwaiter().GetResult();
+            }
+            catch (Exception ex)
+            {
+                // The socket has to be disposed here: an abandoned attempt otherwise sits in
+                // SYN_SENT and holds its file descriptor until the operating system times it out.
+                socket.Dispose();
+                _needsRestart = true;
+
+                _logger.LogError(ex, "[TVHclient] HTSConnectionAsync.Connect: could not connect to '{Host}:{Port}'", hostname, port);
+
+                if (ex is OperationCanceledException)
+                {
+                    throw new TimeoutException(
+                        string.Create(
+                            CultureInfo.InvariantCulture,
+                            $"TVHeadend at '{hostname}:{port}' did not answer within {ConnectTimeout.TotalSeconds:0} seconds"),
+                        ex);
+                }
+
+                throw;
+            }
+
+            _socket = socket;
+            _connected = true;
+            _logger.LogDebug("[TVHclient] HTSConnectionAsync.Connect: socket connected");
         }
 
         private static Thread StartBackgroundThread(ThreadStart threadStart)
