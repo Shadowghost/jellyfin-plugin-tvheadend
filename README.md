@@ -24,6 +24,20 @@ This plugin allows you to manage TVHeadend from Jellyfin.
 
 [See the official documentation for install instructions](https://jellyfin.org/docs/general/server/plugins/index.html#installing).
 
+## Usage
+
+The plugin registers itself as a Live TV service, so there is no tuner or guide provider to add under *Dashboard → Live TV*.
+
+1. In TVHeadend, make sure there is a user with a password that is allowed to stream and to use HTSP. Channels have to exist and be mapped to services, otherwise everything below succeeds and Live TV still stays empty.
+2. In Jellyfin, open *Dashboard → Plugins → TVHeadend* and fill in the hostname, the HTTP port (9981 by default), the HTSP port (9982 by default) and those credentials. TVHeadend behind a path prefix needs no extra setting: the plugin adopts the web root the server reports during the handshake.
+3. Press **Save and test connection**. It saves the form and then has the server check its own saved settings - the page only asks for the check, the credentials never travel back to it. It reports both endpoints the plugin needs:
+   - *HTSP* - the channel, guide and recording connection: server name, version, the negotiated protocol version, or the reason the handshake or the login failed.
+   - *HTTP* - the endpoint streams and recordings are fetched from: whether the credentials are accepted, which authentication scheme TVHeadend asks for, and how many channels this user may watch.
+4. Restart Jellyfin. The connection settings are read once per server run, so a changed host, port or account only takes effect after a restart.
+5. Verify in the UI: *Live TV* lists the channels and their guide data, and existing TVHeadend recordings show up in the *TVHeadEnd Recordings* channel unless that channel is hidden in the settings. A recording created from the guide appears as an upcoming recording in TVHeadend's *Digital Video Recorder* tab.
+
+If Live TV stays empty, the server log is the next place to look: every message from this plugin is prefixed with `[TVHclient]`, and connection problems are logged by `HTSConnectionHandler`.
+
 ## Build
 
 1. To build this plugin you will need the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).

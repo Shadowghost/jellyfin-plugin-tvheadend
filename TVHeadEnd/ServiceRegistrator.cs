@@ -7,7 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 namespace TVHeadEnd;
 
 /// <summary>
-/// Register LDAP services.
+/// Registers the plugin's services.
 /// </summary>
 public class ServiceRegistrator : IPluginServiceRegistrator
 {
@@ -15,6 +15,7 @@ public class ServiceRegistrator : IPluginServiceRegistrator
     public void RegisterServices(IServiceCollection serviceCollection, IServerApplicationHost applicationHost)
     {
         serviceCollection.AddSingleton<HTSConnectionHandler>();
+        serviceCollection.AddSingleton<ConnectionTester>();
         serviceCollection.AddSingleton<ILiveTvService, LiveTvService>();
         serviceCollection.AddSingleton<IChannel, RecordingsChannel>();
     }

@@ -172,7 +172,7 @@ namespace TVHeadEnd
         /// </summary>
         /// <param name="webRoot">The raw web root.</param>
         /// <returns>The normalized web root.</returns>
-        private static string NormalizeWebRoot(string? webRoot)
+        internal static string NormalizeWebRoot(string? webRoot)
         {
             if (string.IsNullOrWhiteSpace(webRoot))
             {
